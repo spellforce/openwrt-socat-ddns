@@ -1,0 +1,129 @@
+#!/bin/sh
+#############################################
+# DDNS & Socat IP 监控守护进程
+# 自动检测 IPv6 变化并更新 DDNS 和转发
+#############################################
+
+CONFIG_FILE="/etc/ddns-socat.conf"
+LAST_IP_FILE="/var/run/ddns-socat-last-ip"
+LOG_TAG="ddns-socat-monitor"
+
+# 加载配置
+load_config() {
+    if [ -f "$CONFIG_FILE" ]; then
+        . "$CONFIG_FILE"
+    else
+        echo "配置文件不存在：$CONFIG_FILE"
+        exit 1
+    fi
+}
+
+# 获取当前 IPv6
+get_current_ipv6() {
+    local ipv6=$(ip -6 addr show "$IPV6_INTERFACE" 2>/dev/null | grep "$IPV6_PREFIX" | head -1 | awk '{print $2}' | cut -d'/' -f1)
+    echo "$ipv6"
+}
+
+# 获取上次记录的 IPv6
+get_last_ipv6() {
+    if [ -f "$LAST_IP_FILE" ]; then
+        cat "$LAST_IP_FILE"
+    else
+        echo ""
+    fi
+}
+
+# 保存当前 IPv6
+save_current_ipv6() {
+    local ipv6=$1
+    echo "$ipv6" > "$LAST_IP_FILE"
+}
+
+# IP 变化处理
+handle_ip_change() {
+    local old_ip=$1
+    local new_ip=$2
+    
+    logger -t "$LOG_TAG" "IPv6 changed: $old_ip -> $new_ip"
+    
+    if [ "$MONITOR_LOG_CHANGES" = "true" ]; then
+        echo "[$(date '+%Y-%m-%d %H:%M:%S')] IPv6 地址变化："
+        echo "  旧地址: $old_ip"
+        echo "  新地址: $new_ip"
+    fi
+    
+    # 停止所有 socat 进程
+    killall socat 2>/dev/null
+    sleep 1
+    
+    # 重新启动 socat（使用新 IP）
+    if [ "$SOCAT_ENABLE" = "true" ]; then
+        echo "$FORWARDS" | grep -v '^$' | grep -v '^#' | while IFS=: read -r ext_port int_ip int_port desc; do
+            ext_port=$(echo "$ext_port" | tr -d ' ')
+            int_ip=$(echo "$int_ip" | tr -d ' ')
+            int_port=$(echo "$int_port" | tr -d ' ')
+            desc=$(echo "$desc" | tr -d ' ')
+            
+            if [ -n "$ext_port" ]; then
+                /usr/bin/socat TCP6-LISTEN:$ext_port,fork,reuseaddr,bind=[$new_ip] TCP4:$int_ip:$int_port >/dev/null 2>&1 &
+                logger -t "$LOG_TAG" "Restarted forward: [$new_ip]:$ext_port -> $int_ip:$int_port"
+            fi
+        done
+    fi
+    
+    # 更新 DDNS
+    if [ "$DDNS_ENABLE" = "true" ]; then
+        sleep 2
+        /usr/bin/ddns-socat-manager update-ddns >/dev/null 2>&1
+    fi
+    
+    # 保存新 IP
+    save_current_ipv6 "$new_ip"
+}
+
+# 主循环
+monitor_loop() {
+    load_config
+    
+    logger -t "$LOG_TAG" "Monitor started, check interval: ${DDNS_INTERVAL}s"
+    
+    # 初始化时记录当前 IP
+    local current_ip=$(get_current_ipv6)
+    if [ -n "$current_ip" ]; then
+        save_current_ipv6 "$current_ip"
+        logger -t "$LOG_TAG" "Initial IPv6: $current_ip"
+    fi
+    
+    # 监控循环
+    while true; do
+        sleep "${DDNS_INTERVAL:-300}"
+        
+        # 重新加载配置（允许动态修改检查间隔）
+        load_config
+        
+        local current_ip=$(get_current_ipv6)
+        local last_ip=$(get_last_ipv6)
+        
+        # 检查是否获取到 IP
+        if [ -z "$current_ip" ]; then
+            logger -t "$LOG_TAG" "Warning: No IPv6 address found"
+            continue
+        fi
+        
+        # 检查 IP 是否变化
+        if [ "$current_ip" != "$last_ip" ]; then
+            if [ -n "$last_ip" ]; then
+                # IP 发生变化
+                handle_ip_change "$last_ip" "$current_ip"
+            else
+                # 首次获取到 IP
+                logger -t "$LOG_TAG" "First IPv6 detected: $current_ip"
+                save_current_ipv6 "$current_ip"
+            fi
+        fi
+    done
+}
+
+# 启动监控
+monitor_loop
+

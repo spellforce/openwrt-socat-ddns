@@ -1,0 +1,618 @@
+#!/bin/sh
+#############################################
+# DDNS & Socat 智能管理工具
+# 用于 OpenWrt 自动配置 IPv6 外网访问
+#############################################
+
+VERSION="1.0.0"
+CONFIG_FILE="/etc/ddns-socat.conf"
+PID_FILE="/var/run/ddns-socat-monitor.pid"
+LOG_TAG="ddns-socat"
+
+# 颜色定义
+RED='\033[0;31m'
+GREEN='\033[0;32m'
+YELLOW='\033[1;33m'
+BLUE='\033[0;34m'
+NC='\033[0m'
+
+# 打印帮助信息
+print_help() {
+    cat << HELP
+${GREEN}=== DDNS & Socat 智能管理工具 v${VERSION} ===${NC}
+
+${YELLOW}命令：${NC}
+  ${GREEN}config${NC}          - 编辑配置文件
+  ${GREEN}status${NC}          - 查看服务状态
+  ${GREEN}start${NC}           - 启动所有服务
+  ${GREEN}stop${NC}            - 停止所有服务
+  ${GREEN}restart${NC}         - 重启所有服务
+  ${GREEN}enable${NC}          - 设置开机自启
+  ${GREEN}disable${NC}         - 禁用开机自启
+  ${GREEN}update-ddns${NC}     - 立即更新 DDNS
+  ${GREEN}show-ipv6${NC}       - 显示当前 IPv6 地址
+  ${GREEN}logs${NC}            - 查看最近日志
+  ${GREEN}test-forward${NC}    - 测试端口转发
+  ${GREEN}list-forwards${NC}   - 列出所有转发规则
+  ${GREEN}version${NC}         - 显示版本信息
+  ${GREEN}help${NC}            - 显示此帮助信息
+
+${YELLOW}示例：${NC}
+  ddns-socat-manager config       # 编辑配置
+  ddns-socat-manager start        # 启动服务
+  ddns-socat-manager status       # 查看状态
+HELP
+}
+
+# 初始化配置文件
+init_config() {
+    if [ ! -f "$CONFIG_FILE" ]; then
+        echo -e "${YELLOW}正在创建配置文件...${NC}"
+        cat > "$CONFIG_FILE" << 'CONF'
+# ========================================
+# DDNS & Socat 配置文件
+# ========================================
+
+# ---------- DDNS 配置 ----------
+DDNS_ENABLE="true"                          # 是否启用 DDNS
+DDNS_PROVIDER="dnspod"                      # DDNS 提供商（目前仅支持 dnspod）
+DDNS_ID="your_dnspod_id"                    # DNSPod ID
+DDNS_TOKEN="your_dnspod_token"              # DNSPod Token
+DDNS_DOMAIN="example.com"                   # 主域名
+DDNS_SUBDOMAIN="@"                          # 子域名（@ 表示根域名）
+DDNS_INTERVAL="300"                         # IP 检查间隔（秒）
+
+# ---------- IPv6 配置 ----------
+IPV6_INTERFACE="pppoe-wan"                  # IPv6 接口名称
+IPV6_PREFIX="2409"                          # IPv6 地址前缀（用于筛选）
+
+# ---------- Socat 转发配置 ----------
+SOCAT_ENABLE="true"                         # 是否启用端口转发
+
+# 转发规则格式：外部端口:内网IP:内网端口:描述
+# 每行一条规则，空行会被忽略
+FORWARDS="
+22:192.168.1.100:22:SSH-Server
+80:192.168.1.100:80:Web-Server
+443:192.168.1.100:443:HTTPS-Server
+"
+
+# ---------- 防火墙配置 ----------
+FIREWALL_ENABLE="true"                      # 是否自动管理防火墙规则
+FIREWALL_ZONE="wan"                         # 防火墙区域
+
+# ---------- 监控配置 ----------
+MONITOR_ENABLE="true"                       # 是否启用 IP 监控
+MONITOR_LOG_CHANGES="true"                  # IP 变化时是否记录日志
+CONF
+        echo -e "${GREEN}✓ 配置文件已创建：$CONFIG_FILE${NC}"
+        echo -e "${YELLOW}请编辑配置文件后再启动服务！${NC}"
+    fi
+}
+
+# 加载配置
+load_config() {
+    init_config
+    . "$CONFIG_FILE"
+}
+
+# 获取当前 IPv6 地址
+get_ipv6() {
+    load_config
+    local ipv6=$(ip -6 addr show "$IPV6_INTERFACE" 2>/dev/null | grep "$IPV6_PREFIX" | head -1 | awk '{print $2}' | cut -d'/' -f1)
+    echo "$ipv6"
+}
+
+# 显示当前 IPv6
+show_ipv6() {
+    local ipv6=$(get_ipv6)
+    if [ -n "$ipv6" ]; then
+        echo -e "${GREEN}当前 IPv6 地址：${NC}$ipv6"
+    else
+        echo -e "${RED}未找到 IPv6 地址${NC}"
+        return 1
+    fi
+}
+
+# 更新 DDNS
+update_ddns() {
+    load_config
+    
+    if [ "$DDNS_ENABLE" != "true" ]; then
+        echo -e "${YELLOW}DDNS 功能已禁用${NC}"
+        return 0
+    fi
+    
+    local ipv6=$(get_ipv6)
+    
+    if [ -z "$ipv6" ]; then
+        echo -e "${RED}错误：未找到 IPv6 地址${NC}"
+        logger -t "$LOG_TAG" "Error: No IPv6 address found on interface $IPV6_INTERFACE"
+        return 1
+    fi
+    
+    echo -e "${YELLOW}正在更新 DDNS...${NC}"
+    echo -e "  域名: ${BLUE}${DDNS_SUBDOMAIN}.${DDNS_DOMAIN}${NC}"
+    echo -e "  IPv6: ${BLUE}${ipv6}${NC}"
+    
+    if [ "$DDNS_PROVIDER" = "dnspod" ]; then
+        # 获取现有记录
+        local record_list=$(curl -s -X POST https://dnsapi.cn/Record.List \
+            -d "login_token=${DDNS_ID},${DDNS_TOKEN}" \
+            -d "format=json" \
+            -d "domain=${DDNS_DOMAIN}" \
+            -d "sub_domain=${DDNS_SUBDOMAIN}" \
+            -d "record_type=AAAA")
+        
+        local record_id=$(echo "$record_list" | grep -o '"id":"[0-9]*"' | head -1 | grep -o '[0-9]*')
+        
+        local response
+        if [ -n "$record_id" ]; then
+            echo -e "${YELLOW}  → 记录已存在 (ID: $record_id)，正在修改...${NC}"
+            response=$(curl -s -X POST https://dnsapi.cn/Record.Modify \
+                -d "login_token=${DDNS_ID},${DDNS_TOKEN}" \
+                -d "format=json" \
+                -d "domain=${DDNS_DOMAIN}" \
+                -d "record_id=$record_id" \
+                -d "sub_domain=${DDNS_SUBDOMAIN}" \
+                -d "record_type=AAAA" \
+                -d "record_line=默认" \
+                -d "value=${ipv6}")
+        else
+            echo -e "${YELLOW}  → 记录不存在，正在创建...${NC}"
+            response=$(curl -s -X POST https://dnsapi.cn/Record.Create \
+                -d "login_token=${DDNS_ID},${DDNS_TOKEN}" \
+                -d "format=json" \
+                -d "domain=${DDNS_DOMAIN}" \
+                -d "sub_domain=${DDNS_SUBDOMAIN}" \
+                -d "record_type=AAAA" \
+                -d "record_line=默认" \
+                -d "value=${ipv6}")
+        fi
+        
+        if echo "$response" | grep -q '"code":"1"'; then
+            echo -e "${GREEN}✓ DDNS 更新成功！${NC}"
+            logger -t "$LOG_TAG" "DDNS updated successfully: ${DDNS_SUBDOMAIN}.${DDNS_DOMAIN} -> $ipv6"
+            # 保存当前 IP
+            echo "$ipv6" > /var/run/ddns-socat-last-ip
+            return 0
+        else
+            echo -e "${RED}✗ DDNS 更新失败${NC}"
+            echo "$response"
+            logger -t "$LOG_TAG" "DDNS update failed: $response"
+            return 1
+        fi
+    else
+        echo -e "${RED}不支持的 DDNS 提供商：$DDNS_PROVIDER${NC}"
+        return 1
+    fi
+}
+
+# 添加防火墙规则
+add_firewall_rule() {
+    local port=$1
+    local desc=$2
+    
+    if [ "$FIREWALL_ENABLE" != "true" ]; then
+        return 0
+    fi
+    
+    # 检查规则是否已存在
+    if uci show firewall | grep -q "dest_port='${port}'.*name='DDNS-SOCAT-${port}'"; then
+        return 0
+    fi
+    
+    # 添加防火墙规则
+    local rule_name="ddns_socat_${port}"
+    uci add firewall rule >/dev/null
+    uci set firewall.@rule[-1].name="DDNS-SOCAT-${port}"
+    uci set firewall.@rule[-1].src="${FIREWALL_ZONE}"
+    uci set firewall.@rule[-1].dest_port="${port}"
+    uci set firewall.@rule[-1].target="ACCEPT"
+    uci set firewall.@rule[-1].proto="tcp"
+    uci set firewall.@rule[-1].family="ipv6"
+    
+    logger -t "$LOG_TAG" "Added firewall rule for port $port ($desc)"
+}
+
+# 删除防火墙规则
+remove_firewall_rule() {
+    local port=$1
+    
+    if [ "$FIREWALL_ENABLE" != "true" ]; then
+        return 0
+    fi
+    
+    # 查找并删除规则
+    local rule_index=$(uci show firewall | grep "name='DDNS-SOCAT-${port}'" | cut -d'.' -f2 | cut -d'=' -f1)
+    
+    if [ -n "$rule_index" ]; then
+        uci delete firewall.${rule_index}
+        logger -t "$LOG_TAG" "Removed firewall rule for port $port"
+    fi
+}
+
+# 清理所有防火墙规则
+cleanup_firewall_rules() {
+    if [ "$FIREWALL_ENABLE" != "true" ]; then
+        return 0
+    fi
+    
+    echo -e "${YELLOW}正在清理防火墙规则...${NC}"
+    
+    # 删除所有 DDNS-SOCAT 相关规则
+    while uci show firewall | grep -q "name='DDNS-SOCAT-"; do
+        local rule_index=$(uci show firewall | grep "name='DDNS-SOCAT-" | head -1 | cut -d'.' -f2 | cut -d'=' -f1)
+        if [ -n "$rule_index" ]; then
+            uci delete firewall.${rule_index}
+        fi
+    done
+    
+    uci commit firewall
+    /etc/init.d/firewall reload >/dev/null 2>&1
+    
+    echo -e "${GREEN}✓ 防火墙规则已清理${NC}"
+}
+
+# 应用防火墙规则
+apply_firewall_rules() {
+    if [ "$FIREWALL_ENABLE" != "true" ]; then
+        echo -e "${YELLOW}防火墙自动管理已禁用${NC}"
+        return 0
+    fi
+    
+    echo -e "${YELLOW}正在应用防火墙规则...${NC}"
+    
+    load_config
+    
+    # 先清理旧规则
+    cleanup_firewall_rules >/dev/null 2>&1
+    
+    # 添加新规则
+    echo "$FORWARDS" | grep -v '^$' | grep -v '^#' | while IFS=: read -r ext_port int_ip int_port desc; do
+        # 去除空格
+        ext_port=$(echo "$ext_port" | tr -d ' ')
+        desc=$(echo "$desc" | tr -d ' ')
+        
+        if [ -n "$ext_port" ]; then
+            add_firewall_rule "$ext_port" "$desc"
+        fi
+    done
+    
+    uci commit firewall
+    /etc/init.d/firewall reload >/dev/null 2>&1
+    
+    echo -e "${GREEN}✓ 防火墙规则已应用${NC}"
+}
+
+# 启动 Socat 转发
+start_socat() {
+    load_config
+    
+    if [ "$SOCAT_ENABLE" != "true" ]; then
+        echo -e "${YELLOW}Socat 转发已禁用${NC}"
+        return 0
+    fi
+    
+    local ipv6=$(get_ipv6)
+    
+    if [ -z "$ipv6" ]; then
+        echo -e "${RED}错误：未找到 IPv6 地址${NC}"
+        return 1
+    fi
+    
+    echo -e "${YELLOW}正在启动端口转发...${NC}"
+    
+    local count=0
+    echo "$FORWARDS" | grep -v '^$' | grep -v '^#' | while IFS=: read -r ext_port int_ip int_port desc; do
+        # 去除空格
+        ext_port=$(echo "$ext_port" | tr -d ' ')
+        int_ip=$(echo "$int_ip" | tr -d ' ')
+        int_port=$(echo "$int_port" | tr -d ' ')
+        desc=$(echo "$desc" | tr -d ' ')
+        
+        if [ -z "$ext_port" ]; then
+            continue
+        fi
+        
+        # 启动 socat
+        /usr/bin/socat TCP6-LISTEN:$ext_port,fork,reuseaddr,bind=[$ipv6] TCP4:$int_ip:$int_port >/dev/null 2>&1 &
+        
+        echo -e "  ${GREEN}✓${NC} [$ext_port] -> $int_ip:$int_port ${BLUE}($desc)${NC}"
+        logger -t "$LOG_TAG" "Started forward: [$ipv6]:$ext_port -> $int_ip:$int_port ($desc)"
+        
+        count=$((count + 1))
+    done
+    
+    echo -e "${GREEN}✓ 已启动 $count 个端口转发${NC}"
+}
+
+# 停止所有 Socat 进程
+stop_socat() {
+    echo -e "${YELLOW}正在停止端口转发...${NC}"
+    
+    local count=$(ps | grep -v grep | grep socat | wc -l)
+    killall socat 2>/dev/null
+    
+    echo -e "${GREEN}✓ 已停止 $count 个端口转发${NC}"
+    logger -t "$LOG_TAG" "Stopped all socat processes"
+}
+
+# 启动监控进程
+start_monitor() {
+    load_config
+    
+    if [ "$MONITOR_ENABLE" != "true" ]; then
+        return 0
+    fi
+    
+    # 检查是否已运行
+    if [ -f "$PID_FILE" ]; then
+        local old_pid=$(cat "$PID_FILE")
+        if kill -0 "$old_pid" 2>/dev/null; then
+            echo -e "${YELLOW}监控进程已在运行 (PID: $old_pid)${NC}"
+            return 0
+        fi
+    fi
+    
+    # 启动监控脚本
+    /usr/bin/ddns-socat-monitor &
+    echo $! > "$PID_FILE"
+    
+    echo -e "${GREEN}✓ IP 监控进程已启动${NC}"
+}
+
+# 停止监控进程
+stop_monitor() {
+    if [ -f "$PID_FILE" ]; then
+        local pid=$(cat "$PID_FILE")
+        if kill -0 "$pid" 2>/dev/null; then
+            kill "$pid"
+            echo -e "${GREEN}✓ 监控进程已停止${NC}"
+        fi
+        rm -f "$PID_FILE"
+    fi
+}
+
+# 启动所有服务
+start_all() {
+    echo -e "${GREEN}=== 启动服务 ===${NC}\n"
+    
+    apply_firewall_rules
+    echo ""
+    
+    start_socat
+    echo ""
+    
+    update_ddns
+    echo ""
+    
+    start_monitor
+    
+    echo -e "\n${GREEN}=== 所有服务已启动 ===${NC}"
+}
+
+# 停止所有服务
+stop_all() {
+    echo -e "${GREEN}=== 停止服务 ===${NC}\n"
+    
+    stop_monitor
+    stop_socat
+    cleanup_firewall_rules
+    
+    echo -e "\n${GREEN}=== 所有服务已停止 ===${NC}"
+}
+
+# 重启所有服务
+restart_all() {
+    stop_all
+    echo ""
+    sleep 2
+    start_all
+}
+
+# 显示状态
+show_status() {
+    load_config
+    
+    echo -e "${GREEN}=== 服务状态 ===${NC}\n"
+    
+    # IPv6 地址
+    local ipv6=$(get_ipv6)
+    if [ -n "$ipv6" ]; then
+        echo -e "${BLUE}IPv6 地址：${NC}${GREEN}$ipv6${NC}"
+    else
+        echo -e "${BLUE}IPv6 地址：${NC}${RED}未找到${NC}"
+    fi
+    
+    # DDNS 状态
+    echo -e "\n${BLUE}DDNS 状态：${NC}"
+    if [ "$DDNS_ENABLE" = "true" ]; then
+        echo -e "  状态: ${GREEN}已启用${NC}"
+        echo -e "  域名: ${DDNS_SUBDOMAIN}.${DDNS_DOMAIN}"
+        if [ -f /var/run/ddns-socat-last-ip ]; then
+            local last_ip=$(cat /var/run/ddns-socat-last-ip)
+            echo -e "  上次更新: $last_ip"
+        fi
+    else
+        echo -e "  状态: ${YELLOW}已禁用${NC}"
+    fi
+    
+    # Socat 状态
+    echo -e "\n${BLUE}端口转发状态：${NC}"
+    if [ "$SOCAT_ENABLE" = "true" ]; then
+        local socat_count=$(ps | grep -v grep | grep socat | wc -l)
+        if [ "$socat_count" -gt 0 ]; then
+            echo -e "  状态: ${GREEN}运行中${NC}"
+            echo -e "  进程数: $socat_count"
+        else
+            echo -e "  状态: ${RED}未运行${NC}"
+        fi
+    else
+        echo -e "  状态: ${YELLOW}已禁用${NC}"
+    fi
+    
+    # 监控状态
+    echo -e "\n${BLUE}IP 监控状态：${NC}"
+    if [ "$MONITOR_ENABLE" = "true" ]; then
+        if [ -f "$PID_FILE" ]; then
+            local pid=$(cat "$PID_FILE")
+            if kill -0 "$pid" 2>/dev/null; then
+                echo -e "  状态: ${GREEN}运行中${NC} (PID: $pid)"
+            else
+                echo -e "  状态: ${RED}未运行${NC}"
+            fi
+        else
+            echo -e "  状态: ${RED}未运行${NC}"
+        fi
+    else
+        echo -e "  状态: ${YELLOW}已禁用${NC}"
+    fi
+    
+    # 防火墙规则
+    echo -e "\n${BLUE}防火墙规则：${NC}"
+    if [ "$FIREWALL_ENABLE" = "true" ]; then
+        local rule_count=$(uci show firewall | grep "name='DDNS-SOCAT-" | wc -l)
+        echo -e "  规则数: $rule_count"
+    else
+        echo -e "  状态: ${YELLOW}自动管理已禁用${NC}"
+    fi
+}
+
+# 列出所有转发规则
+list_forwards() {
+    load_config
+    
+    echo -e "${GREEN}=== 转发规则列表 ===${NC}\n"
+    
+    local ipv6=$(get_ipv6)
+    
+    echo "$FORWARDS" | grep -v '^$' | grep -v '^#' | while IFS=: read -r ext_port int_ip int_port desc; do
+        ext_port=$(echo "$ext_port" | tr -d ' ')
+        int_ip=$(echo "$int_ip" | tr -d ' ')
+        int_port=$(echo "$int_port" | tr -d ' ')
+        desc=$(echo "$desc" | tr -d ' ')
+        
+        if [ -n "$ext_port" ]; then
+            echo -e "${BLUE}$desc${NC}"
+            echo -e "  外部: ${GREEN}[$ipv6]:$ext_port${NC}"
+            echo -e "  内部: ${YELLOW}$int_ip:$int_port${NC}"
+            echo ""
+        fi
+    done
+}
+
+# 查看日志
+show_logs() {
+    echo -e "${GREEN}=== 最近日志 (最后 30 条) ===${NC}\n"
+    logread | grep "$LOG_TAG" | tail -30
+}
+
+# 编辑配置
+edit_config() {
+    init_config
+    
+    if command -v vi >/dev/null 2>&1; then
+        vi "$CONFIG_FILE"
+    elif command -v nano >/dev/null 2>&1; then
+        nano "$CONFIG_FILE"
+    else
+        echo -e "${RED}未找到文本编辑器${NC}"
+        echo -e "${YELLOW}配置文件位置：${NC}$CONFIG_FILE"
+        return 1
+    fi
+}
+
+# 设置开机自启
+enable_autostart() {
+    cat > /etc/init.d/ddns-socat << 'INITD_EOF'
+#!/bin/sh /etc/rc.common
+
+START=99
+STOP=10
+
+start() {
+    /usr/bin/ddns-socat-manager start
+}
+
+stop() {
+    /usr/bin/ddns-socat-manager stop
+}
+
+restart() {
+    /usr/bin/ddns-socat-manager restart
+}
+INITD_EOF
+    
+    chmod +x /etc/init.d/ddns-socat
+    /etc/init.d/ddns-socat enable
+    
+    echo -e "${GREEN}✓ 已设置开机自启${NC}"
+}
+
+# 禁用开机自启
+disable_autostart() {
+    /etc/init.d/ddns-socat disable 2>/dev/null
+    rm -f /etc/init.d/ddns-socat
+    
+    echo -e "${GREEN}✓ 已禁用开机自启${NC}"
+}
+
+# 显示版本
+show_version() {
+    echo -e "${GREEN}DDNS & Socat 管理工具${NC}"
+    echo -e "版本: ${BLUE}v${VERSION}${NC}"
+    echo -e "项目: https://github.com/yourusername/openwrt-socat-ddns"
+}
+
+# 主函数
+main() {
+    case "$1" in
+        config)
+            edit_config
+            ;;
+        status)
+            show_status
+            ;;
+        start)
+            start_all
+            ;;
+        stop)
+            stop_all
+            ;;
+        restart)
+            restart_all
+            ;;
+        enable)
+            enable_autostart
+            ;;
+        disable)
+            disable_autostart
+            ;;
+        update-ddns)
+            update_ddns
+            ;;
+        show-ipv6)
+            show_ipv6
+            ;;
+        logs)
+            show_logs
+            ;;
+        list-forwards)
+            list_forwards
+            ;;
+        version)
+            show_version
+            ;;
+        help|--help|-h)
+            print_help
+            ;;
+        *)
+            print_help
+            ;;
+    esac
+}
+
+# 执行主函数
+main "$@"
+

@@ -1,0 +1,28 @@
+# 配置文件（包含敏感信息）
+*.conf
+!*.conf.example
+
+# 临时文件
+*.tmp
+*.log
+*.pid
+
+# 系统文件
+.DS_Store
+Thumbs.db
+
+# 编辑器
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# 测试文件
+test/
+*.test
+
+# 备份文件
+*.bak
+*.backup
+
