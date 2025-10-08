@@ -21,13 +21,13 @@
 ### 在线安装
 
 ```bash
-wget -O - https://raw.githubusercontent.com/yourusername/openwrt-socat-ddns/main/install.sh | sh
+wget -O - https://raw.githubusercontent.com/spellforce/openwrt-socat-ddns/main/install.sh | sh
 ```
 
 or
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/yourusername/openwrt-socat-ddns/main/install.sh | sh
+curl -fsSL https://raw.githubusercontent.com/spellforce/openwrt-socat-ddns/main/install.sh | sh
 ```
 
 ### 本地安装

@@ -137,19 +137,24 @@ update_ddns() {
     
     if [ "$DDNS_PROVIDER" = "dnspod" ]; then
         # 获取现有记录
-        local record_list=$(curl -s -X POST https://dnsapi.cn/Record.List \
+        local record_list
+        if ! record_list=$(curl -s -f -X POST https://dnsapi.cn/Record.List \
             -d "login_token=${DDNS_ID},${DDNS_TOKEN}" \
             -d "format=json" \
             -d "domain=${DDNS_DOMAIN}" \
             -d "sub_domain=${DDNS_SUBDOMAIN}" \
-            -d "record_type=AAAA")
+            -d "record_type=AAAA" 2>&1); then
+            echo -e "${RED}✗ 网络请求失败${NC}"
+            logger -t "$LOG_TAG" "Network error: cannot connect to DNSPod API"
+            return 1
+        fi
         
         local record_id=$(echo "$record_list" | grep -o '"id":"[0-9]*"' | head -1 | grep -o '[0-9]*')
         
         local response
         if [ -n "$record_id" ]; then
             echo -e "${YELLOW}  → 记录已存在 (ID: $record_id)，正在修改...${NC}"
-            response=$(curl -s -X POST https://dnsapi.cn/Record.Modify \
+            if ! response=$(curl -s -f -X POST https://dnsapi.cn/Record.Modify \
                 -d "login_token=${DDNS_ID},${DDNS_TOKEN}" \
                 -d "format=json" \
                 -d "domain=${DDNS_DOMAIN}" \
@@ -157,17 +162,25 @@ update_ddns() {
                 -d "sub_domain=${DDNS_SUBDOMAIN}" \
                 -d "record_type=AAAA" \
                 -d "record_line=默认" \
-                -d "value=${ipv6}")
+                -d "value=${ipv6}" 2>&1); then
+                echo -e "${RED}✗ 网络请求失败${NC}"
+                logger -t "$LOG_TAG" "Network error: cannot modify record"
+                return 1
+            fi
         else
             echo -e "${YELLOW}  → 记录不存在，正在创建...${NC}"
-            response=$(curl -s -X POST https://dnsapi.cn/Record.Create \
+            if ! response=$(curl -s -f -X POST https://dnsapi.cn/Record.Create \
                 -d "login_token=${DDNS_ID},${DDNS_TOKEN}" \
                 -d "format=json" \
                 -d "domain=${DDNS_DOMAIN}" \
                 -d "sub_domain=${DDNS_SUBDOMAIN}" \
                 -d "record_type=AAAA" \
                 -d "record_line=默认" \
-                -d "value=${ipv6}")
+                -d "value=${ipv6}" 2>&1); then
+                echo -e "${RED}✗ 网络请求失败${NC}"
+                logger -t "$LOG_TAG" "Network error: cannot create record"
+                return 1
+            fi
         fi
         
         if echo "$response" | grep -q '"code":"1"'; then
@@ -203,14 +216,17 @@ add_firewall_rule() {
     fi
     
     # 添加防火墙规则
-    local rule_name="ddns_socat_${port}"
-    uci add firewall rule >/dev/null
-    uci set firewall.@rule[-1].name="DDNS-SOCAT-${port}"
-    uci set firewall.@rule[-1].src="${FIREWALL_ZONE}"
-    uci set firewall.@rule[-1].dest_port="${port}"
-    uci set firewall.@rule[-1].target="ACCEPT"
-    uci set firewall.@rule[-1].proto="tcp"
-    uci set firewall.@rule[-1].family="ipv6"
+    if ! uci add firewall rule >/dev/null 2>&1; then
+        logger -t "$LOG_TAG" "Failed to add firewall rule for port $port"
+        return 1
+    fi
+    
+    uci set firewall.@rule[-1].name="DDNS-SOCAT-${port}" 2>/dev/null
+    uci set firewall.@rule[-1].src="${FIREWALL_ZONE}" 2>/dev/null
+    uci set firewall.@rule[-1].dest_port="${port}" 2>/dev/null
+    uci set firewall.@rule[-1].target="ACCEPT" 2>/dev/null
+    uci set firewall.@rule[-1].proto="tcp" 2>/dev/null
+    uci set firewall.@rule[-1].family="ipv6" 2>/dev/null
     
     logger -t "$LOG_TAG" "Added firewall rule for port $port ($desc)"
 }
@@ -248,8 +264,14 @@ cleanup_firewall_rules() {
         fi
     done
     
-    uci commit firewall
-    /etc/init.d/firewall reload >/dev/null 2>&1
+    if ! uci commit firewall 2>/dev/null; then
+        echo -e "${RED}✗ 防火墙配置提交失败${NC}"
+        return 1
+    fi
+    
+    if ! /etc/init.d/firewall reload >/dev/null 2>&1; then
+        echo -e "${YELLOW}⚠ 防火墙重载失败，请手动重启${NC}"
+    fi
     
     echo -e "${GREEN}✓ 防火墙规则已清理${NC}"
 }
@@ -279,8 +301,14 @@ apply_firewall_rules() {
         fi
     done
     
-    uci commit firewall
-    /etc/init.d/firewall reload >/dev/null 2>&1
+    if ! uci commit firewall 2>/dev/null; then
+        echo -e "${RED}✗ 防火墙配置提交失败${NC}"
+        return 1
+    fi
+    
+    if ! /etc/init.d/firewall reload >/dev/null 2>&1; then
+        echo -e "${YELLOW}⚠ 防火墙重载失败，请手动重启${NC}"
+    fi
     
     echo -e "${GREEN}✓ 防火墙规则已应用${NC}"
 }
@@ -316,10 +344,13 @@ start_socat() {
         fi
         
         # 启动 socat
-        /usr/bin/socat TCP6-LISTEN:$ext_port,fork,reuseaddr,bind=[$ipv6] TCP4:$int_ip:$int_port >/dev/null 2>&1 &
-        
-        echo -e "  ${GREEN}✓${NC} [$ext_port] -> $int_ip:$int_port ${BLUE}($desc)${NC}"
-        logger -t "$LOG_TAG" "Started forward: [$ipv6]:$ext_port -> $int_ip:$int_port ($desc)"
+        if /usr/bin/socat TCP6-LISTEN:$ext_port,fork,reuseaddr,bind=[$ipv6] TCP4:$int_ip:$int_port >/dev/null 2>&1 & then
+            echo -e "  ${GREEN}✓${NC} [$ext_port] -> $int_ip:$int_port ${BLUE}($desc)${NC}"
+            logger -t "$LOG_TAG" "Started forward: [$ipv6]:$ext_port -> $int_ip:$int_port ($desc)"
+        else
+            echo -e "  ${RED}✗${NC} [$ext_port] 启动失败"
+            logger -t "$LOG_TAG" "Failed to start forward on port $ext_port"
+        fi
         
         count=$((count + 1))
     done
@@ -545,9 +576,13 @@ restart() {
 INITD_EOF
     
     chmod +x /etc/init.d/ddns-socat
-    /etc/init.d/ddns-socat enable
     
-    echo -e "${GREEN}✓ 已设置开机自启${NC}"
+    if /etc/init.d/ddns-socat enable 2>/dev/null; then
+        echo -e "${GREEN}✓ 已设置开机自启${NC}"
+    else
+        echo -e "${RED}✗ 设置开机自启失败${NC}"
+        return 1
+    fi
 }
 
 # 禁用开机自启

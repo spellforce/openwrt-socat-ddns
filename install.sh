@@ -5,7 +5,7 @@
 #############################################
 
 VERSION="1.0.0"
-REPO_URL="https://raw.githubusercontent.com/yourusername/openwrt-socat-ddns/main"
+REPO_URL="https://raw.githubusercontent.com/spellforce/openwrt-socat-ddns/main"
 
 # 颜色定义
 RED='\033[0;31m'
@@ -101,15 +101,25 @@ download_scripts() {
         echo -e "${BLUE}  从 GitHub 下载...${NC}"
         
         echo -e "  下载主管理脚本..."
-        curl -fsSL "${REPO_URL}/ddns-socat-manager" -o /usr/bin/ddns-socat-manager
+        if ! curl -fsSL "${REPO_URL}/ddns-socat-manager" -o /usr/bin/ddns-socat-manager; then
+            echo -e "${RED}✗ 下载失败${NC}"
+            echo -e "${YELLOW}请检查：${NC}"
+            echo -e "  1. 网络连接是否正常"
+            echo -e "  2. GitHub 是否可访问"
+            echo -e "  3. URL 是否正确: ${REPO_URL}"
+            exit 1
+        fi
         chmod +x /usr/bin/ddns-socat-manager
         
         echo -e "  下载监控脚本..."
-        curl -fsSL "${REPO_URL}/ddns-socat-monitor" -o /usr/bin/ddns-socat-monitor
+        if ! curl -fsSL "${REPO_URL}/ddns-socat-monitor" -o /usr/bin/ddns-socat-monitor; then
+            echo -e "${RED}✗ 下载失败${NC}"
+            exit 1
+        fi
         chmod +x /usr/bin/ddns-socat-monitor
     fi
     
-    echo -e "${GREEN}✓ 脚本下载完成${NC}\n"
+    echo -e "${GREEN}✓ 脚本安装完成${NC}\n"
 }
 
 # 创建配置文件

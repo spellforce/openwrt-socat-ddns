@@ -75,15 +75,23 @@ fi
 
 # 清理防火墙规则
 echo -e "${YELLOW}[5/5] 清理防火墙规则...${NC}"
-while uci show firewall 2>/dev/null | grep -q "name='DDNS-SOCAT-"; do
-    rule_index=$(uci show firewall | grep "name='DDNS-SOCAT-" | head -1 | cut -d'.' -f2 | cut -d'=' -f1)
-    if [ -n "$rule_index" ]; then
-        uci delete firewall.${rule_index} 2>/dev/null
+if command -v uci >/dev/null 2>&1; then
+    while uci show firewall 2>/dev/null | grep -q "name='DDNS-SOCAT-"; do
+        rule_index=$(uci show firewall | grep "name='DDNS-SOCAT-" | head -1 | cut -d'.' -f2 | cut -d'=' -f1)
+        if [ -n "$rule_index" ]; then
+            uci delete firewall.${rule_index} 2>/dev/null
+        fi
+    done
+    
+    if uci commit firewall 2>/dev/null; then
+        /etc/init.d/firewall reload >/dev/null 2>&1
+        echo -e "${GREEN}✓ 防火墙规则已清理${NC}\n"
+    else
+        echo -e "${YELLOW}⚠ 防火墙配置提交失败，可能需要手动清理${NC}\n"
     fi
-done
-uci commit firewall 2>/dev/null
-/etc/init.d/firewall reload >/dev/null 2>&1
-echo -e "${GREEN}✓ 防火墙规则已清理${NC}\n"
+else
+    echo -e "${YELLOW}⚠ UCI 命令不存在，跳过防火墙清理${NC}\n"
+fi
 
 echo -e "${GREEN}=== 卸载完成 ===${NC}\n"
 
