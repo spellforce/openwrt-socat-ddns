@@ -52,8 +52,10 @@ handle_ip_change() {
         echo "  新地址: $new_ip"
     fi
     
-    # 停止所有 socat 进程
-    killall socat 2>/dev/null
+    # 停止所有 socat 进程（只杀 /usr/bin/socat）
+    ps | grep "/usr/bin/socat" | grep -v grep | awk '{print $1}' | while read pid; do
+        kill "$pid" 2>/dev/null
+    done
     sleep 1
     
     # 重新启动 socat（使用新 IP）

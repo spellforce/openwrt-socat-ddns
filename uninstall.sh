@@ -84,7 +84,7 @@ if command -v uci >/dev/null 2>&1; then
     done
     
     if uci commit firewall 2>/dev/null; then
-        /etc/init.d/firewall reload >/dev/null 2>&1
+        /etc/init.d/firewall restart >/dev/null 2>&1
         echo -e "${GREEN}✓ 防火墙规则已清理${NC}\n"
     else
         echo -e "${YELLOW}⚠ 防火墙配置提交失败，可能需要手动清理${NC}\n"
