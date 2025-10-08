@@ -38,7 +38,7 @@ check_system() {
     if [ ! -f /etc/openwrt_release ]; then
         echo -e "${RED}警告：当前系统可能不是 OpenWrt${NC}"
         echo -e "${YELLOW}是否继续安装？(y/n)${NC}"
-        read -r answer
+        read -r answer < /dev/tty
         if [ "$answer" != "y" ] && [ "$answer" != "Y" ]; then
             exit 1
         fi
@@ -141,30 +141,30 @@ create_config() {
 config_wizard() {
     echo -e "${YELLOW}[5/6] 配置向导${NC}"
     echo -e "${BLUE}是否现在配置？(y/n)${NC}"
-    read -r answer
+    read -r answer < /dev/tty
     
     if [ "$answer" = "y" ] || [ "$answer" = "Y" ]; then
         echo ""
         echo -e "${GREEN}=== DDNS 配置 ===${NC}"
         
         echo -e "${BLUE}请输入 DNSPod ID:${NC}"
-        read -r dnspod_id
+        read -r dnspod_id < /dev/tty
         
         echo -e "${BLUE}请输入 DNSPod Token:${NC}"
-        read -r dnspod_token
+        read -r dnspod_token < /dev/tty
         
         echo -e "${BLUE}请输入域名 (例如: example.com):${NC}"
-        read -r domain
+        read -r domain < /dev/tty
         
-        echo -e "${BLUE}请输入子域名 (@ 表示根域名):${NC}"
-        read -r subdomain
+        echo -e "${BLUE}请输入子域名 (@ 表示根域名，留空默认 @):${NC}"
+        read -r subdomain < /dev/tty
         subdomain=${subdomain:-@}
         
         echo ""
         echo -e "${GREEN}=== IPv6 配置 ===${NC}"
         
-        echo -e "${BLUE}请输入 IPv6 接口名称 (例如: pppoe-wan):${NC}"
-        read -r ipv6_interface
+        echo -e "${BLUE}请输入 IPv6 接口名称 (留空默认 pppoe-wan):${NC}"
+        read -r ipv6_interface < /dev/tty
         ipv6_interface=${ipv6_interface:-pppoe-wan}
         
         echo ""
@@ -175,7 +175,7 @@ config_wizard() {
         
         forwards=""
         while true; do
-            read -r forward_rule
+            read -r forward_rule < /dev/tty
             if [ -z "$forward_rule" ]; then
                 break
             fi
@@ -246,7 +246,7 @@ finish_installation() {
     echo -e "   ${BLUE}ddns-socat-manager help${NC}\n"
     
     echo -e "${YELLOW}是否现在启动服务？(y/n)${NC}"
-    read -r answer
+    read -r answer < /dev/tty
     
     if [ "$answer" = "y" ] || [ "$answer" = "Y" ]; then
         echo ""
@@ -254,7 +254,7 @@ finish_installation() {
         echo ""
         
         echo -e "${YELLOW}是否设置开机自启？(y/n)${NC}"
-        read -r answer2
+        read -r answer2 < /dev/tty
         
         if [ "$answer2" = "y" ] || [ "$answer2" = "Y" ]; then
             /usr/bin/ddns-socat-manager enable

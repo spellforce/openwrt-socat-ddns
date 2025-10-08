@@ -28,7 +28,7 @@ fi
 # 确认卸载
 echo -e "${RED}警告：此操作将完全卸载 DDNS & Socat 管理工具${NC}"
 echo -e "${YELLOW}是否继续？(y/n)${NC}"
-read -r answer
+read -r answer < /dev/tty
 
 if [ "$answer" != "y" ] && [ "$answer" != "Y" ]; then
     echo -e "${GREEN}已取消卸载${NC}"
@@ -64,7 +64,7 @@ echo -e "${GREEN}✓ 脚本文件已删除${NC}\n"
 # 询问是否删除配置文件
 echo -e "${YELLOW}[4/5] 是否删除配置文件？${NC}"
 echo -e "${BLUE}删除配置文件后无法恢复，请确认 (y/n)${NC}"
-read -r answer
+read -r answer < /dev/tty
 
 if [ "$answer" = "y" ] || [ "$answer" = "Y" ]; then
     rm -f /etc/ddns-socat.conf
@@ -100,7 +100,7 @@ echo -e "${BLUE}注意：这些包可能被其他程序使用${NC}"
 echo -e "  - socat"
 echo -e "  - curl"
 echo -e "${YELLOW}是否卸载？(y/n)${NC}"
-read -r answer
+read -r answer < /dev/tty
 
 if [ "$answer" = "y" ] || [ "$answer" = "Y" ]; then
     opkg remove socat curl 2>/dev/null
